@@ -2,6 +2,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 
 // Plain object type without Document methods
 export type TodoDoc = {
+  _id?: string | mongoose.Types.ObjectId;
   title: string;
   completed: boolean;
   createdAt: Date;
@@ -10,9 +11,9 @@ export type TodoDoc = {
   deleted?: boolean;
 }
 
-export interface ITodo extends Document, TodoDoc {}
+export interface ITodo extends Document, Omit<TodoDoc, '_id'> {}
 
-const TodoSchema: Schema = new Schema({
+const TodoSchema = new Schema({
   title: {
     type: String,
     required: true,

@@ -10,6 +10,9 @@ interface TodoItem {
   syncedAt?: number;
   deleted?: boolean;
   lastAction?: 'create' | 'update' | 'delete';
+  localOnly?: boolean; // Track if item exists only locally
+  serverDeleted?: boolean; // Track if item was deleted on server
+  syncError?: string; // Track sync errors
 }
 
 declare module "idb" {
@@ -31,7 +34,7 @@ class DatabaseService {
   async initDatabase() {
     this.db = await openDB("offline-app-db", 1, {
       upgrade(db) {
-        db.createObjectStore("todos", {
+        const todoStore = db.createObjectStore("todos", {
           keyPath: "id",
           autoIncrement: true,
         });
@@ -49,13 +52,14 @@ class DatabaseService {
       syncedAt: undefined,
       deleted: false,
       lastAction: 'create' as const,
+      localOnly: true
     });
   }
 
-  async getAllTodos() {
+  async getAllTodos(includeDeleted = false) {
     if (!this.db) await this.initDatabase();
     const todos = await this.db!.getAll("todos");
-    return todos.filter(todo => !todo.deleted);
+    return includeDeleted ? todos : todos.filter(todo => !todo.deleted);
   }
 
   async getUnsyncedTodos() {
@@ -93,38 +97,45 @@ class DatabaseService {
     return this.db!.put("todos", updatedTodo);
   }
 
-  async deleteTodo(id: number) {
-    if (!this.db) await this.initDatabase();
-    const todo = await this.db!.get("todos", id);
-    if (!todo) throw new Error("Todo not found");
-
-    // Soft delete - mark as deleted and update sync status
-    return this.db!.put("todos", {
-      ...todo,
-      deleted: true,
-      lastAction: 'delete' as const,
-      updatedAt: Date.now(),
-      syncedAt: undefined, // Reset sync status to trigger sync
+  async markTodoDeleted(id: number, isDeleted: boolean) {
+    return this.updateTodo(id, {
+      deleted: isDeleted,
+      lastAction: isDeleted ? 'delete' as const : undefined,
+      syncedAt: isDeleted ? undefined : Date.now(),
+      serverDeleted: isDeleted
     });
+  }
+
+  async deleteTodo(id: number) {
+    return this.markTodoDeleted(id, true);
+  }
+
+  async permanentlyDeleteTodo(id: number) {
+    if (!this.db) await this.initDatabase();
+    return this.db!.delete("todos", id);
   }
 
   async markTodoSynced(id: number) {
     return this.updateTodo(id, { 
       syncedAt: Date.now(),
-      lastAction: undefined // Clear last action after successful sync
+      lastAction: undefined,
+      localOnly: false,
+      syncError: undefined
     });
   }
 
-  // New method to permanently remove todos that have been synced and deleted
   async cleanupDeletedTodos() {
     if (!this.db) await this.initDatabase();
     const todos = await this.db!.getAll("todos");
     const deletedAndSynced = todos.filter(todo => 
-      todo.deleted && todo.syncedAt && todo.lastAction !== 'delete'
+      todo.deleted && 
+      todo.serverDeleted && 
+      todo.syncedAt && 
+      !todo.syncError
     );
     
     for (const todo of deletedAndSynced) {
-      await this.db!.delete("todos", todo.id!);
+      await this.permanentlyDeleteTodo(todo.id!);
     }
   }
 }

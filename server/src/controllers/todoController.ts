@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import Todo, { TodoDoc } from "../models/Todo";
+import Todo, { ITodo, TodoDoc } from "../models/Todo";
 
 export const getTodos = async (req: Request, res: Response) => {
   try {
@@ -55,6 +55,20 @@ export const deleteTodo = async (req: Request, res: Response) => {
   }
 };
 
+// Helper function to convert Mongoose document to TodoDoc
+const toTodoDoc = (doc: ITodo): TodoDoc => {
+  const obj = doc.toObject();
+  return {
+    _id: obj._id.toString(),
+    title: obj.title,
+    completed: obj.completed,
+    createdAt: obj.createdAt,
+    updatedAt: obj.updatedAt,
+    syncedAt: obj.syncedAt,
+    deleted: obj.deleted,
+  };
+};
+
 export const syncTodos = async (req: Request, res: Response) => {
   try {
     console.log("Received sync request with data:", req.body);
@@ -66,100 +80,130 @@ export const syncTodos = async (req: Request, res: Response) => {
     }
 
     const syncedTodos: TodoDoc[] = [];
+    const errors: { id?: string; error: string }[] = [];
 
     for (const todo of todos) {
       console.log("Processing todo:", todo);
 
-      let newTodo;
-      let updatedTodo;
-      let deletedTodo;
-      let existingTodo;
+      try {
+        let newTodo;
+        let updatedTodo;
+        let deletedTodo;
+        let existingTodo;
 
-      switch (todo.action) {
-        case "create":
-          // Create new todo
-          console.log("Creating new todo:", todo);
-          newTodo = new Todo({
-            title: todo.title,
-            completed: todo.completed,
-            createdAt: new Date(todo.createdAt),
-            updatedAt: new Date(todo.updatedAt),
-            syncedAt: new Date(),
-          });
-          await newTodo.save();
-          console.log("New todo created:", newTodo);
-          syncedTodos.push(newTodo.toObject());
-          break;
-
-        case "update":
-          // Update existing todo
-          if (todo._id) {
-            console.log("Updating existing todo:", todo._id);
-            updatedTodo = await Todo.findByIdAndUpdate(
-              todo._id,
-              {
-                title: todo.title,
-                completed: todo.completed,
-                updatedAt: new Date(todo.updatedAt),
-                syncedAt: new Date(),
-              },
-              { new: true }
-            );
-
-            if (updatedTodo) {
-              console.log("Todo updated successfully:", updatedTodo);
-              syncedTodos.push(updatedTodo.toObject());
-            }
-          }
-          break;
-
-        case "delete":
-          // Delete todo
-          if (todo._id) {
-            console.log("Deleting todo:", todo._id);
-            deletedTodo = await Todo.findByIdAndDelete(todo._id);
-            if (deletedTodo) {
-              console.log("Todo deleted successfully:", deletedTodo);
-              syncedTodos.push({
-                ...deletedTodo.toObject(),
-                deleted: true,
-                syncedAt: new Date(),
-              });
-            }
-          }
-          break;
-
-        default:
-          // Handle todos without action (backward compatibility)
-          if (todo._id) {
-            // Update existing todo
-            existingTodo = await Todo.findByIdAndUpdate(
-              todo._id,
-              {
-                title: todo.title,
-                completed: todo.completed,
-                syncedAt: new Date(),
-              },
-              { new: true, upsert: true }
-            );
-            if (existingTodo) {
-              syncedTodos.push(existingTodo.toObject());
-            }
-          } else {
+        switch (todo.action) {
+          case "create":
             // Create new todo
+            console.log("Creating new todo:", todo);
             newTodo = new Todo({
               title: todo.title,
               completed: todo.completed,
+              createdAt: new Date(todo.createdAt),
+              updatedAt: new Date(todo.updatedAt),
               syncedAt: new Date(),
             });
             await newTodo.save();
-            syncedTodos.push(newTodo.toObject());
-          }
+            console.log("New todo created:", newTodo);
+            syncedTodos.push(toTodoDoc(newTodo));
+            break;
+
+          case "update":
+            // Update existing todo
+            if (todo._id) {
+              console.log("Updating existing todo:", todo._id);
+              updatedTodo = await Todo.findByIdAndUpdate(
+                todo._id,
+                {
+                  title: todo.title,
+                  completed: todo.completed,
+                  updatedAt: new Date(todo.updatedAt),
+                  syncedAt: new Date(),
+                },
+                { new: true }
+              );
+
+              if (updatedTodo) {
+                console.log("Todo updated successfully:", updatedTodo);
+                syncedTodos.push(toTodoDoc(updatedTodo));
+              } else {
+                errors.push({
+                  id: todo._id,
+                  error: "Todo not found for update",
+                });
+              }
+            }
+            break;
+
+          case "delete":
+            // Delete todo
+            if (todo._id) {
+              console.log("Deleting todo:", todo._id);
+              deletedTodo = await Todo.findByIdAndDelete(todo._id);
+              if (deletedTodo) {
+                console.log("Todo deleted successfully:", deletedTodo);
+                syncedTodos.push({
+                  ...toTodoDoc(deletedTodo),
+                  deleted: true,
+                  syncedAt: new Date(),
+                });
+              } else {
+                // If todo doesn't exist, consider it successfully deleted
+                const deletedTodoDoc: TodoDoc = {
+                  _id: todo._id,
+                  title: todo.title,
+                  completed: todo.completed,
+                  deleted: true,
+                  syncedAt: new Date(),
+                  createdAt: new Date(todo.createdAt),
+                  updatedAt: new Date(todo.updatedAt),
+                };
+                syncedTodos.push(deletedTodoDoc);
+              }
+            }
+            break;
+
+          default:
+            // Handle todos without action (backward compatibility)
+            if (todo._id) {
+              // Update existing todo
+              existingTodo = await Todo.findByIdAndUpdate(
+                todo._id,
+                {
+                  title: todo.title,
+                  completed: todo.completed,
+                  syncedAt: new Date(),
+                },
+                { new: true, upsert: true }
+              );
+              if (existingTodo) {
+                syncedTodos.push(toTodoDoc(existingTodo));
+              }
+            } else {
+              // Create new todo
+              newTodo = new Todo({
+                title: todo.title,
+                completed: todo.completed,
+                syncedAt: new Date(),
+              });
+              await newTodo.save();
+              syncedTodos.push(toTodoDoc(newTodo));
+            }
+        }
+      } catch (todoError) {
+        console.error("Error processing todo:", todo, todoError);
+        errors.push({
+          id: todo._id,
+          error:
+            todoError instanceof Error ? todoError.message : "Unknown error",
+        });
       }
     }
 
-    console.log("Sync completed. Sending response:", syncedTodos);
-    res.json(syncedTodos);
+    console.log("Sync completed. Sending response:", { syncedTodos, errors });
+    res.json({
+      todos: syncedTodos,
+      errors: errors.length > 0 ? errors : undefined,
+    });
   } catch (error) {
     console.error("Error in syncTodos:", error);
     res.status(400).json({ message: "Error syncing todos", error });
